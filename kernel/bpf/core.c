@@ -1561,7 +1561,7 @@ out:
 	COND_JMP(s, JSLE, <=)
 #undef COND_JMP
 	/* ST, STX and LDX*/
-	ST_NOSPEC :
+	ST_NOSPEC:
 		/* Speculation barrier for mitigating Speculative Store Bypass.
 		 * In case of arm64, we rely on the firmware mitigation as
 		 * controlled via the ssbd kernel parameter. Whenever the
