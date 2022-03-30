@@ -24,10 +24,12 @@
 #include "iwl-prph.h"
 #include "rs.h"
 #include "fw/api/scan.h"
+#include "fw/api/rfi.h"
 #include "time-event.h"
 #include "fw-api.h"
 #include "fw/api/nan.h"
 #include "fw/acpi.h"
+#include "fw/uefi.h"
 
 #ifdef CPTCFG_IWLWIFI_DEVICE_TESTMODE
 #include "iwl-dnt-cfg.h"
@@ -37,8 +39,8 @@
 
 #define DRV_DESCRIPTION	"The new Intel(R) wireless AGN driver for Linux"
 MODULE_DESCRIPTION(DRV_DESCRIPTION);
-MODULE_AUTHOR(DRV_AUTHOR);
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(IWLWIFI);
 
 static const struct iwl_op_mode_ops iwl_mvm_ops;
 static const struct iwl_op_mode_ops iwl_mvm_ops_mq;
@@ -102,7 +104,7 @@ static void iwl_mvm_nic_config(struct iwl_op_mode *op_mode)
 {
 	struct iwl_mvm *mvm = IWL_OP_MODE_GET_MVM(op_mode);
 	u8 radio_cfg_type, radio_cfg_step, radio_cfg_dash;
-	u32 reg_val = 0;
+	u32 reg_val;
 	u32 phy_config = iwl_mvm_get_phy_config(mvm);
 
 	radio_cfg_type = (phy_config & FW_PHY_CFG_RADIO_TYPE) >>
@@ -113,10 +115,7 @@ static void iwl_mvm_nic_config(struct iwl_op_mode *op_mode)
 			 FW_PHY_CFG_RADIO_DASH_POS;
 
 	/* SKU control */
-	reg_val |= CSR_HW_REV_STEP(mvm->trans->hw_rev) <<
-				CSR_HW_IF_CONFIG_REG_POS_MAC_STEP;
-	reg_val |= CSR_HW_REV_DASH(mvm->trans->hw_rev) <<
-				CSR_HW_IF_CONFIG_REG_POS_MAC_DASH;
+	reg_val = CSR_HW_REV_STEP_DASH(mvm->trans->hw_rev);
 
 	/* radio configuration */
 	reg_val |= radio_cfg_type << CSR_HW_IF_CONFIG_REG_POS_PHY_TYPE;
@@ -141,8 +140,7 @@ static void iwl_mvm_nic_config(struct iwl_op_mode *op_mode)
 		reg_val |= CSR_HW_IF_CONFIG_REG_D3_DEBUG;
 
 	iwl_trans_set_bits_mask(mvm->trans, CSR_HW_IF_CONFIG_REG,
-				CSR_HW_IF_CONFIG_REG_MSK_MAC_DASH |
-				CSR_HW_IF_CONFIG_REG_MSK_MAC_STEP |
+				CSR_HW_IF_CONFIG_REG_MSK_MAC_STEP_DASH |
 				CSR_HW_IF_CONFIG_REG_MSK_PHY_TYPE |
 				CSR_HW_IF_CONFIG_REG_MSK_PHY_STEP |
 				CSR_HW_IF_CONFIG_REG_MSK_PHY_DASH |
@@ -217,7 +215,7 @@ static void iwl_mvm_rx_monitor_notif(struct iwl_mvm *mvm,
 
 	if (he_cap) {
 		/* we know that ours is writable */
-		struct ieee80211_sta_he_cap *he = (void *)he_cap;
+		struct ieee80211_sta_he_cap *he = (void *)(uintptr_t)he_cap;
 
 		WARN_ON(!he->has_he);
 		WARN_ON(!(he->he_cap_elem.phy_cap_info[0] &
@@ -261,7 +259,8 @@ static void iwl_mvm_rx_thermal_dual_chain_req(struct iwl_mvm *mvm,
 	 */
 	mvm->fw_static_smps_request =
 		req->event == cpu_to_le32(THERMAL_DUAL_CHAIN_REQ_DISABLE);
-	ieee80211_iterate_interfaces(mvm->hw, IEEE80211_IFACE_ITER_NORMAL,
+	ieee80211_iterate_interfaces(mvm->hw,
+				     IEEE80211_IFACE_SKIP_SDATA_NOT_IN_DRIVER,
 				     iwl_mvm_intf_dual_chain_req, NULL);
 }
 
@@ -284,6 +283,7 @@ enum iwl_rx_handler_context {
 /**
  * struct iwl_rx_handlers handler for FW notification
  * @cmd_id: command id
+ * @min_size: minimum size to expect for the notification
  * @context: see &iwl_rx_handler_context
  * @fn: the function is called when notification is received
  */
@@ -366,9 +366,6 @@ static const struct iwl_rx_handlers iwl_mvm_rx_handlers[] = {
 		   iwl_mvm_rx_umac_scan_iter_complete_notif, RX_HANDLER_SYNC,
 		   struct iwl_umac_scan_iter_complete_notif),
 
-	RX_HANDLER(CARD_STATE_NOTIFICATION, iwl_mvm_rx_card_state_notif,
-		   RX_HANDLER_SYNC, struct iwl_card_state_notif),
-
 	RX_HANDLER(MISSED_BEACONS_NOTIFICATION, iwl_mvm_rx_missed_beacons_notif,
 		   RX_HANDLER_SYNC, struct iwl_missed_beacons_notif),
 
@@ -431,9 +428,13 @@ static const struct iwl_rx_handlers iwl_mvm_rx_handlers[] = {
 		       iwl_mvm_probe_resp_data_notif,
 		       RX_HANDLER_ASYNC_LOCKED,
 		       struct iwl_probe_resp_data_notif),
-	RX_HANDLER_GRP(MAC_CONF_GROUP, CHANNEL_SWITCH_NOA_NOTIF,
-		       iwl_mvm_channel_switch_noa_notif,
-		       RX_HANDLER_SYNC, struct iwl_channel_switch_noa_notif),
+	RX_HANDLER_GRP(MAC_CONF_GROUP, CHANNEL_SWITCH_START_NOTIF,
+		       iwl_mvm_channel_switch_start_notif,
+		       RX_HANDLER_SYNC, struct iwl_channel_switch_start_notif),
+	RX_HANDLER_GRP(MAC_CONF_GROUP, CHANNEL_SWITCH_ERROR_NOTIF,
+		       iwl_mvm_channel_switch_error_notif,
+		       RX_HANDLER_ASYNC_UNLOCKED,
+		       struct iwl_channel_switch_error_notif),
 #ifdef CPTCFG_IWLWIFI_DEVICE_TESTMODE
 	RX_HANDLER_NO_SIZE(DEBUG_LOG_MSG, iwl_mvm_rx_fw_logs, RX_HANDLER_SYNC),
 #endif
@@ -445,6 +446,10 @@ static const struct iwl_rx_handlers iwl_mvm_rx_handlers[] = {
 		       iwl_mvm_rx_thermal_dual_chain_req,
 		       RX_HANDLER_ASYNC_LOCKED,
 		       struct iwl_thermal_dual_chain_request),
+
+	RX_HANDLER_GRP(SYSTEM_GROUP, RFI_DEACTIVATE_NOTIF,
+		       iwl_rfi_deactivate_notif_handler, RX_HANDLER_ASYNC_UNLOCKED,
+		       struct iwl_rfi_deactivate_notif),
 };
 #undef RX_HANDLER
 #undef RX_HANDLER_GRP
@@ -502,7 +507,6 @@ static const struct iwl_hcmd_names iwl_mvm_legacy_names[] = {
 	HCMD_NAME(POWER_TABLE_CMD),
 	HCMD_NAME(PSM_UAPSD_AP_MISBEHAVING_NOTIFICATION),
 	HCMD_NAME(REPLY_THERMAL_MNG_BACKOFF),
-	HCMD_NAME(DC2DC_CONFIG_CMD),
 	HCMD_NAME(NVM_ACCESS_CMD),
 	HCMD_NAME(BEACON_NOTIFICATION),
 	HCMD_NAME(BEACON_TEMPLATE_CMD),
@@ -512,7 +516,6 @@ static const struct iwl_hcmd_names iwl_mvm_legacy_names[] = {
 	HCMD_NAME(STATISTICS_NOTIFICATION),
 	HCMD_NAME(EOSP_NOTIFICATION),
 	HCMD_NAME(REDUCE_TX_POWER_CMD),
-	HCMD_NAME(CARD_STATE_NOTIFICATION),
 	HCMD_NAME(MISSED_BEACONS_NOTIFICATION),
 	HCMD_NAME(TDLS_CONFIG_CMD),
 	HCMD_NAME(MAC_PM_POWER_TABLE),
@@ -560,6 +563,10 @@ static const struct iwl_hcmd_names iwl_mvm_system_names[] = {
 	HCMD_NAME(SOC_CONFIGURATION_CMD),
 	HCMD_NAME(INIT_EXTENDED_CFG_CMD),
 	HCMD_NAME(FW_ERROR_RECOVERY_CMD),
+	HCMD_NAME(RFI_CONFIG_CMD),
+	HCMD_NAME(RFI_GET_FREQ_TABLE_CMD),
+	HCMD_NAME(SYSTEM_FEATURES_CONTROL_CMD),
+	HCMD_NAME(RFI_DEACTIVATE_NOTIF),
 };
 
 /* Please keep this array *SORTED* by hex value.
@@ -569,7 +576,7 @@ static const struct iwl_hcmd_names iwl_mvm_mac_conf_names[] = {
 	HCMD_NAME(CHANNEL_SWITCH_TIME_EVENT_CMD),
 	HCMD_NAME(SESSION_PROTECTION_CMD),
 	HCMD_NAME(SESSION_PROTECTION_NOTIF),
-	HCMD_NAME(CHANNEL_SWITCH_NOA_NOTIF),
+	HCMD_NAME(CHANNEL_SWITCH_START_NOTIF),
 };
 
 /* Please keep this array *SORTED* by hex value.
@@ -579,7 +586,7 @@ static const struct iwl_hcmd_names iwl_mvm_phy_names[] = {
 	HCMD_NAME(CMD_DTS_MEASUREMENT_TRIGGER_WIDE),
 	HCMD_NAME(CTDP_CONFIG_CMD),
 	HCMD_NAME(TEMP_REPORTING_THRESHOLDS_CMD),
-	HCMD_NAME(GEO_TX_POWER_LIMIT),
+	HCMD_NAME(PER_CHAIN_LIMIT_OFFSET_CMD),
 	HCMD_NAME(CT_KILL_NOTIFICATION),
 	HCMD_NAME(DTS_MEASUREMENT_NOTIF_WIDE),
 };
@@ -592,6 +599,7 @@ static const struct iwl_hcmd_names iwl_mvm_data_path_names[] = {
 	HCMD_NAME(UPDATE_MU_GROUPS_CMD),
 	HCMD_NAME(TRIGGER_RX_QUEUES_NOTIF_CMD),
 	HCMD_NAME(STA_HE_CTXT_CMD),
+	HCMD_NAME(RLC_CONFIG_CMD),
 	HCMD_NAME(RFH_QUEUE_CONFIG_CMD),
 	HCMD_NAME(TLC_MNG_CONFIG_CMD),
 	HCMD_NAME(CHEST_COLLECTOR_FILTER_CONFIG_CMD),
@@ -743,13 +751,11 @@ static void iwl_mvm_init_modparams(struct iwl_mvm *mvm)
 }
 #endif
 
-static int iwl_mvm_fwrt_dump_start(void *ctx)
+static void iwl_mvm_fwrt_dump_start(void *ctx)
 {
 	struct iwl_mvm *mvm = ctx;
 
 	mutex_lock(&mvm->mutex);
-
-	return 0;
 }
 
 static void iwl_mvm_fwrt_dump_end(void *ctx)
@@ -823,7 +829,6 @@ static int iwl_mvm_start_get_nvm(struct iwl_mvm *mvm)
 	}
 
 get_nvm_from_fw:
-
 	rtnl_lock();
 #if CFG80211_VERSION >= KERNEL_VERSION(5,12,0)
 	wiphy_lock(mvm->hw->wiphy);
@@ -842,8 +847,7 @@ get_nvm_from_fw:
 
 	ret = iwl_run_init_mvm_ucode(mvm);
 	if (ret && ret != -ERFKILL)
-		iwl_fw_dbg_error_collect(&mvm->fwrt,
-					 FW_DBG_TRIGGER_DRIVER);
+		iwl_fw_dbg_error_collect(&mvm->fwrt, FW_DBG_TRIGGER_DRIVER);
 	if (!ret && iwl_mvm_is_lar_supported(mvm)) {
 		mvm->hw->wiphy->regulatory_flags |= REGULATORY_WIPHY_SELF_MANAGED;
 		ret = iwl_mvm_init_mcc(mvm);
@@ -884,6 +888,9 @@ static int iwl_mvm_start_post_nvm(struct iwl_mvm *mvm)
 					 mvm->mei_rfkill_blocked,
 					 RFKILL_HARD_BLOCK_NOT_OWNER);
 #endif
+
+	iwl_mvm_mei_set_sw_rfkill_state(mvm);
+
 	return 0;
 }
 
@@ -930,7 +937,9 @@ static void iwl_mvm_mei_roaming_forbidden(void *priv, bool forbidden)
 	if (!mvm->hw_registered || !mvm->csme_vif)
 		return;
 
+#ifdef CPTCFG_IWLMVM_VENDOR_CMDS
 	iwl_mvm_send_roaming_forbidden_event(mvm, mvm->csme_vif, forbidden);
+#endif
 }
 
 static void iwl_mvm_sap_connected_wk(struct work_struct *wk)
@@ -993,6 +1002,183 @@ static const struct iwl_mei_ops mei_ops = {
 	.nic_stolen = iwl_mvm_mei_nic_stolen,
 };
 
+struct iwl_mvm_frob_txf_data {
+	u8 *buf;
+	size_t buflen;
+};
+
+static void iwl_mvm_frob_txf_key_iter(struct ieee80211_hw *hw,
+				      struct ieee80211_vif *vif,
+				      struct ieee80211_sta *sta,
+				      struct ieee80211_key_conf *key,
+				      void *data)
+{
+	struct iwl_mvm_frob_txf_data *txf = data;
+	u8 keylen, match, matchend;
+	u8 *keydata;
+	size_t i;
+
+	switch (key->cipher) {
+	case WLAN_CIPHER_SUITE_CCMP:
+		keydata = key->key;
+		keylen = key->keylen;
+		break;
+	case WLAN_CIPHER_SUITE_WEP40:
+	case WLAN_CIPHER_SUITE_WEP104:
+	case WLAN_CIPHER_SUITE_TKIP:
+		/*
+		 * WEP has short keys which might show up in the payload,
+		 * and then you can deduce the key, so in this case just
+		 * remove all FIFO data.
+		 * For TKIP, we don't know the phase 2 keys here, so same.
+		 */
+		memset(txf->buf, 0xBB, txf->buflen);
+		return;
+	default:
+		return;
+	}
+
+	/* scan for key material and clear it out */
+	match = 0;
+	for (i = 0; i < txf->buflen; i++) {
+		if (txf->buf[i] != keydata[match]) {
+			match = 0;
+			continue;
+		}
+		match++;
+		if (match == keylen) {
+			memset(txf->buf + i - keylen, 0xAA, keylen);
+			match = 0;
+		}
+	}
+
+	/* we're dealing with a FIFO, so check wrapped around data */
+	matchend = match;
+	for (i = 0; match && i < keylen - match; i++) {
+		if (txf->buf[i] != keydata[match])
+			break;
+		match++;
+		if (match == keylen) {
+			memset(txf->buf, 0xAA, i + 1);
+			memset(txf->buf + txf->buflen - matchend, 0xAA,
+			       matchend);
+			break;
+		}
+	}
+}
+
+static void iwl_mvm_frob_txf(void *ctx, void *buf, size_t buflen)
+{
+	struct iwl_mvm_frob_txf_data txf = {
+		.buf = buf,
+		.buflen = buflen,
+	};
+	struct iwl_mvm *mvm = ctx;
+
+	/* embedded key material exists only on old API */
+	if (iwl_mvm_has_new_tx_api(mvm))
+		return;
+
+	rcu_read_lock();
+	ieee80211_iter_keys_rcu(mvm->hw, NULL, iwl_mvm_frob_txf_key_iter, &txf);
+	rcu_read_unlock();
+}
+
+static void iwl_mvm_frob_hcmd(void *ctx, void *hcmd, size_t len)
+{
+	/* we only use wide headers for commands */
+	struct iwl_cmd_header_wide *hdr = hcmd;
+	unsigned int frob_start = sizeof(*hdr), frob_end = 0;
+
+	if (len < sizeof(hdr))
+		return;
+
+	/* all the commands we care about are in LONG_GROUP */
+	if (hdr->group_id != LONG_GROUP)
+		return;
+
+	switch (hdr->cmd) {
+	case WEP_KEY:
+	case WOWLAN_TKIP_PARAM:
+	case WOWLAN_KEK_KCK_MATERIAL:
+	case ADD_STA_KEY:
+		/*
+		 * blank out everything here, easier than dealing
+		 * with the various versions of the command
+		 */
+		frob_end = INT_MAX;
+		break;
+	case MGMT_MCAST_KEY:
+		frob_start = offsetof(struct iwl_mvm_mgmt_mcast_key_cmd, igtk);
+		BUILD_BUG_ON(offsetof(struct iwl_mvm_mgmt_mcast_key_cmd, igtk) !=
+			     offsetof(struct iwl_mvm_mgmt_mcast_key_cmd_v1, igtk));
+
+		frob_end = offsetofend(struct iwl_mvm_mgmt_mcast_key_cmd, igtk);
+		BUILD_BUG_ON(offsetof(struct iwl_mvm_mgmt_mcast_key_cmd, igtk) <
+			     offsetof(struct iwl_mvm_mgmt_mcast_key_cmd_v1, igtk));
+		break;
+	}
+
+	if (frob_start >= frob_end)
+		return;
+
+	if (frob_end > len)
+		frob_end = len;
+
+	memset((u8 *)hcmd + frob_start, 0xAA, frob_end - frob_start);
+}
+
+static void iwl_mvm_frob_mem(void *ctx, u32 mem_addr, void *mem, size_t buflen)
+{
+	const struct iwl_dump_exclude *excl;
+	struct iwl_mvm *mvm = ctx;
+	int i;
+
+	switch (mvm->fwrt.cur_fw_img) {
+	case IWL_UCODE_INIT:
+	default:
+		/* not relevant */
+		return;
+	case IWL_UCODE_REGULAR:
+	case IWL_UCODE_REGULAR_USNIFFER:
+		excl = mvm->fw->dump_excl;
+		break;
+	case IWL_UCODE_WOWLAN:
+		excl = mvm->fw->dump_excl_wowlan;
+		break;
+	}
+
+	BUILD_BUG_ON(sizeof(mvm->fw->dump_excl) !=
+		     sizeof(mvm->fw->dump_excl_wowlan));
+
+	for (i = 0; i < ARRAY_SIZE(mvm->fw->dump_excl); i++) {
+		u32 start, end;
+
+		if (!excl[i].addr || !excl[i].size)
+			continue;
+
+		start = excl[i].addr;
+		end = start + excl[i].size;
+
+		if (end <= mem_addr || start >= mem_addr + buflen)
+			continue;
+
+		if (start < mem_addr)
+			start = mem_addr;
+
+		if (end > mem_addr + buflen)
+			end = mem_addr + buflen;
+
+		memset((u8 *)mem + start - mem_addr, 0xAA, end - start);
+	}
+}
+
+static const struct iwl_dump_sanitize_ops iwl_mvm_sanitize_ops = {
+	.frob_txf = iwl_mvm_frob_txf,
+	.frob_hcmd = iwl_mvm_frob_hcmd,
+	.frob_mem = iwl_mvm_frob_mem,
+};
+
 static struct iwl_op_mode *
 iwl_op_mode_mvm_start(struct iwl_trans *trans, const struct iwl_cfg *cfg,
 		      const struct iwl_fw *fw, struct dentry *dbgfs_dir)
@@ -1004,9 +1190,11 @@ iwl_op_mode_mvm_start(struct iwl_trans *trans, const struct iwl_cfg *cfg,
 	static const u8 no_reclaim_cmds[] = {
 		TX_CMD,
 	};
+
+	u32 max_agg = trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_BZ ?
+			   IEEE80211_MAX_AMPDU_BUF_EHT : IEEE80211_MAX_AMPDU_BUF_HE;
 	int scan_size;
 	u32 min_backoff;
-	enum iwl_amsdu_size rb_size_default;
 	struct iwl_mvm_csme_conn_info *csme_conn_info __maybe_unused;
 
 	/*
@@ -1026,7 +1214,7 @@ iwl_op_mode_mvm_start(struct iwl_trans *trans, const struct iwl_cfg *cfg,
 	if (!hw)
 		return NULL;
 
-	hw->max_rx_aggregation_subframes = IEEE80211_MAX_AMPDU_BUF;
+	hw->max_rx_aggregation_subframes = max_agg;
 
 #ifdef CPTCFG_IWLWIFI_SUPPORT_DEBUG_OVERRIDES
 	if (trans->dbg_cfg.rx_agg_subframes)
@@ -1037,7 +1225,7 @@ iwl_op_mode_mvm_start(struct iwl_trans *trans, const struct iwl_cfg *cfg,
 	if (cfg->max_tx_agg_size)
 		hw->max_tx_aggregation_subframes = cfg->max_tx_agg_size;
 	else
-		hw->max_tx_aggregation_subframes = IEEE80211_MAX_AMPDU_BUF;
+		hw->max_tx_aggregation_subframes = max_agg;
 
 	op_mode = hw->priv;
 
@@ -1049,9 +1237,10 @@ iwl_op_mode_mvm_start(struct iwl_trans *trans, const struct iwl_cfg *cfg,
 	mvm->hw = hw;
 
 	iwl_fw_runtime_init(&mvm->fwrt, trans, fw, &iwl_mvm_fwrt_ops, mvm,
-			    dbgfs_dir);
+			    &iwl_mvm_sanitize_ops, mvm, dbgfs_dir);
 
 	iwl_mvm_get_acpi_tables(mvm);
+	iwl_uefi_get_sgom_table(trans, &mvm->fwrt);
 
 	mvm->init_status = 0;
 
@@ -1168,8 +1357,8 @@ iwl_op_mode_mvm_start(struct iwl_trans *trans, const struct iwl_cfg *cfg,
 	mvm->cmd_ver.range_resp =
 		iwl_fw_lookup_notif_ver(mvm->fw, LOCATION_GROUP,
 					TOF_RANGE_RESPONSE_NOTIF, 5);
-	/* we only support up to version 8 */
-	if (WARN_ON_ONCE(mvm->cmd_ver.range_resp > 8))
+	/* we only support up to version 9 */
+	if (WARN_ON_ONCE(mvm->cmd_ver.range_resp > 9))
 		goto out_free;
 
 	/*
@@ -1180,14 +1369,9 @@ iwl_op_mode_mvm_start(struct iwl_trans *trans, const struct iwl_cfg *cfg,
 	trans_cfg.no_reclaim_cmds = no_reclaim_cmds;
 	trans_cfg.n_no_reclaim_cmds = ARRAY_SIZE(no_reclaim_cmds);
 
-	if (mvm->trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_AX210)
-		rb_size_default = IWL_AMSDU_2K;
-	else
-		rb_size_default = IWL_AMSDU_4K;
-
 	switch (iwlwifi_mod_params.amsdu_size) {
 	case IWL_AMSDU_DEF:
-		trans_cfg.rx_buf_size = rb_size_default;
+		trans_cfg.rx_buf_size = IWL_AMSDU_4K;
 		break;
 	case IWL_AMSDU_4K:
 		trans_cfg.rx_buf_size = IWL_AMSDU_4K;
@@ -1201,7 +1385,7 @@ iwl_op_mode_mvm_start(struct iwl_trans *trans, const struct iwl_cfg *cfg,
 	default:
 		pr_err("%s: Unsupported amsdu_size: %d\n", KBUILD_MODNAME,
 		       iwlwifi_mod_params.amsdu_size);
-		trans_cfg.rx_buf_size = rb_size_default;
+		trans_cfg.rx_buf_size = IWL_AMSDU_4K;
 	}
 
 	trans->wide_cmd_header = true;
@@ -1300,12 +1484,18 @@ iwl_op_mode_mvm_start(struct iwl_trans *trans, const struct iwl_cfg *cfg,
 
 	mvm->mei_registered = !iwl_mei_register(mvm, &mei_ops);
 
-	/*
-	 * Get NVM failed, but we are registered to MEI, we'll get
-	 * the NVM later when it'll be possible to get it from CSME.
-	 */
-	if (iwl_mvm_start_get_nvm(mvm) && mvm->mei_registered)
-		return op_mode;
+	if (iwl_mvm_start_get_nvm(mvm)) {
+		/*
+		 * Getting NVM failed while CSME is the owner, but we are
+		 * registered to MEI, we'll get the NVM later when it'll be
+		 * possible to get it from CSME.
+		 */
+		if (trans->csme_own && mvm->mei_registered)
+			return op_mode;
+
+		goto out_thermal_exit;
+	}
+
 
 	if (iwl_mvm_start_post_nvm(mvm))
 		goto out_thermal_exit;
@@ -1819,6 +2009,9 @@ void iwl_mvm_nic_restart(struct iwl_mvm *mvm, bool fw_error)
 	 */
 	if (!mvm->fw_restart && fw_error) {
 		iwl_fw_error_collect(&mvm->fwrt, false);
+	} else if (test_bit(IWL_MVM_STATUS_STARTING,
+			    &mvm->status)) {
+		IWL_ERR(mvm, "Starting mac, retry will be triggered anyway\n");
 	} else if (test_bit(IWL_MVM_STATUS_IN_HW_RESTART, &mvm->status)) {
 		struct iwl_mvm_reprobe *reprobe;
 
@@ -1874,9 +2067,16 @@ void iwl_mvm_nic_restart(struct iwl_mvm *mvm, bool fw_error)
 		iwl_dnt_dispatch_handle_nic_err(mvm->trans);
 #endif
 
-		if (fw_error && mvm->fw_restart > 0)
+		if (fw_error && mvm->fw_restart > 0) {
 			mvm->fw_restart--;
-		ieee80211_restart_hw(mvm->hw);
+			ieee80211_restart_hw(mvm->hw);
+		} else if (mvm->fwrt.trans->dbg.restart_required) {
+			IWL_DEBUG_INFO(mvm, "FW restart requested after debug collection\n");
+			mvm->fwrt.trans->dbg.restart_required = FALSE;
+			ieee80211_restart_hw(mvm->hw);
+		} else if (mvm->trans->trans_cfg->device_family <= IWL_DEVICE_FAMILY_8000) {
+			ieee80211_restart_hw(mvm->hw);
+		}
 	}
 }
 
@@ -1884,7 +2084,9 @@ static void iwl_mvm_nic_error(struct iwl_op_mode *op_mode, bool sync)
 {
 	struct iwl_mvm *mvm = IWL_OP_MODE_GET_MVM(op_mode);
 
-	if (!test_bit(STATUS_TRANS_DEAD, &mvm->trans->status))
+	if (!test_bit(STATUS_TRANS_DEAD, &mvm->trans->status) &&
+	    !test_and_clear_bit(IWL_MVM_STATUS_SUPPRESS_ERROR_LOG_ONCE,
+				&mvm->status))
 		iwl_mvm_dump_nic_error_log(mvm);
 
 	if (sync) {
@@ -1905,7 +2107,7 @@ static void iwl_mvm_nic_error(struct iwl_op_mode *op_mode, bool sync)
 	if (!test_bit(IWL_MVM_STATUS_FIRMWARE_RUNNING, &mvm->status))
 		return;
 
-	iwl_mvm_nic_restart(mvm, true);
+	iwl_mvm_nic_restart(mvm, false);
 }
 
 static void iwl_mvm_cmd_queue_full(struct iwl_op_mode *op_mode)
@@ -1962,6 +2164,9 @@ static void iwl_mvm_rx_mq_rss(struct iwl_op_mode *op_mode,
 	struct iwl_mvm *mvm = IWL_OP_MODE_GET_MVM(op_mode);
 	struct iwl_rx_packet *pkt = rxb_addr(rxb);
 	u16 cmd = WIDE_ID(pkt->hdr.group_id, pkt->hdr.cmd);
+
+	if (unlikely(queue >= mvm->trans->num_rx_queues))
+		return;
 
 	if (unlikely(cmd == WIDE_ID(LEGACY_GROUP, FRAME_RELEASE)))
 		iwl_mvm_rx_frame_release(mvm, napi, rxb, queue);

@@ -5,7 +5,7 @@
  * Copyright 2006-2007	Jiri Benc <jbenc@suse.cz>
  * Copyright 2008-2010 Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2013-2015  Intel Mobile Communications GmbH
- * Copyright 2018-2019  Intel Corporation
+ * Copyright 2018-2019, 2021  Intel Corporation
  */
 
 #include <linux/export.h>
@@ -756,7 +756,6 @@ static void ieee80211_report_used_skb(struct ieee80211_local *local,
  */
 #define STA_LOST_PKT_THRESHOLD	50
 #define STA_LOST_PKT_TIME	HZ		/* 1 sec since last ACK */
-#define STA_LOST_TDLS_PKT_THRESHOLD	10
 #define STA_LOST_TDLS_PKT_TIME		(10*HZ) /* 10secs since last ACK */
 
 static void ieee80211_lost_packet(struct sta_info *sta,
@@ -783,7 +782,7 @@ static void ieee80211_lost_packet(struct sta_info *sta,
 	}
 
 	/*
-	 * If we're in TDLS mode, make sure that all STA_LOST_TDLS_PKT_THRESHOLD
+	 * If we're in TDLS mode, make sure that all STA_LOST_PKT_THRESHOLD
 	 * of the last packets were lost, and that no ACK was received in the
 	 * last STA_LOST_TDLS_PKT_TIME ms, before triggering the CQM packet-loss
 	 * mechanism.
@@ -985,6 +984,25 @@ static void __ieee80211_tx_status(struct ieee80211_hw *hw,
 		if (!(info->flags & IEEE80211_TX_CTL_INJECTED) && acked)
 			ieee80211_frame_acked(sta, skb);
 
+	} else if (wiphy_ext_feature_isset(local->hw.wiphy,
+					   NL80211_EXT_FEATURE_AIRTIME_FAIRNESS)) {
+		struct ieee80211_sub_if_data *sdata;
+		struct ieee80211_txq *txq;
+		u32 airtime;
+
+		/* Account airtime to multicast queue */
+		sdata = ieee80211_sdata_from_skb(local, skb);
+
+		if (sdata && (txq = sdata->vif.txq)) {
+			airtime = info->status.tx_time ?:
+				ieee80211_calc_expected_tx_airtime(hw,
+								   &sdata->vif,
+								   NULL,
+								   skb->len,
+								   false);
+
+			ieee80211_register_airtime(txq, airtime, 0);
+		}
 	}
 
 	/* SNMP counters
@@ -1021,12 +1039,11 @@ static void __ieee80211_tx_status(struct ieee80211_hw *hw,
 	    ieee80211_hw_check(&local->hw, REPORTS_TX_ACK_STATUS) &&
 	    !(info->flags & IEEE80211_TX_CTL_INJECTED) &&
 	    local->ps_sdata && !(local->scanning)) {
-		if (info->flags & IEEE80211_TX_STAT_ACK) {
+		if (info->flags & IEEE80211_TX_STAT_ACK)
 			local->ps_sdata->u.mgd.flags |=
 					IEEE80211_STA_NULLFUNC_ACKED;
-		} else
-			mod_timer(&local->dynamic_ps_timer, jiffies +
-					msecs_to_jiffies(10));
+		mod_timer(&local->dynamic_ps_timer,
+			  jiffies + msecs_to_jiffies(10));
 	}
 
 	ieee80211_report_used_skb(local, skb, false);

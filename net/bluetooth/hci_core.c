@@ -44,6 +44,7 @@
 #include "smp.h"
 #include "leds.h"
 #include "msft.h"
+#include "aosp.h"
 
 static void hci_rx_work(struct work_struct *work);
 static void hci_cmd_work(struct work_struct *work);
@@ -1348,6 +1349,12 @@ int hci_inquiry(void __user *arg)
 		goto done;
 	}
 
+	/* Restrict maximum inquiry length to 60 seconds */
+	if (ir.length > 60) {
+		err = -EINVAL;
+		goto done;
+	}
+
 	hci_dev_lock(hdev);
 	if (inquiry_cache_age(hdev) > INQUIRY_CACHE_AGE_MAX ||
 	    inquiry_cache_empty(hdev) || ir.flags & IREQ_CACHE_FLUSH) {
@@ -1591,8 +1598,10 @@ setup_failed:
 	    hci_dev_test_flag(hdev, HCI_VENDOR_DIAG) && hdev->set_diag)
 		ret = hdev->set_diag(hdev, true);
 
-	msft_do_open(hdev);
-	msft_power_on(hdev);
+	if (!hci_dev_test_flag(hdev, HCI_USER_CHANNEL)) {
+		msft_do_open(hdev);
+		aosp_do_open(hdev);
+	}
 
 	clear_bit(HCI_INIT, &hdev->flags);
 
@@ -1794,7 +1803,10 @@ int hci_dev_do_close(struct hci_dev *hdev)
 
 	hci_sock_dev_event(hdev, HCI_DEV_DOWN);
 
-	msft_power_off(hdev);
+	if (!hci_dev_test_flag(hdev, HCI_USER_CHANNEL)) {
+		aosp_do_close(hdev);
+		msft_do_close(hdev);
+	}
 
 	if (hdev->flush)
 		hdev->flush(hdev);
@@ -3756,7 +3768,6 @@ struct hci_dev *hci_alloc_dev(void)
 	hdev->adv_instance_cnt = 0;
 	hdev->cur_adv_instance = 0x00;
 	hdev->adv_instance_timeout = 0;
-	hdev->ext_directed_advertising = false;
 	hdev->eir_max_name_len = 48;
 
 	hdev->advmon_allowlist_duration = 300;
@@ -3828,6 +3839,7 @@ struct hci_dev *hci_alloc_dev(void)
 	INIT_LIST_HEAD(&hdev->conn_hash.list);
 	INIT_LIST_HEAD(&hdev->adv_instances);
 	INIT_LIST_HEAD(&hdev->blocked_keys);
+	INIT_LIST_HEAD(&hdev->monitored_devices);
 
 	INIT_WORK(&hdev->rx_work, hci_rx_work);
 	INIT_WORK(&hdev->cmd_work, hci_cmd_work);
@@ -3965,10 +3977,12 @@ int hci_register_dev(struct hci_dev *hdev)
 	queue_work(hdev->req_workqueue, &hdev->power_on);
 
 	idr_init(&hdev->adv_monitors_idr);
+	msft_register(hdev);
 
 	return id;
 
 err_wqueue:
+	debugfs_remove_recursive(hdev->debugfs);
 	destroy_workqueue(hdev->workqueue);
 	destroy_workqueue(hdev->req_workqueue);
 err:
@@ -3997,7 +4011,7 @@ void hci_unregister_dev(struct hci_dev *hdev)
 		cancel_work_sync(&hdev->suspend_prepare);
 	}
 
-	msft_do_close(hdev);
+	msft_unregister(hdev);
 
 	hci_dev_do_close(hdev);
 
@@ -5087,7 +5101,15 @@ static void hci_rx_work(struct work_struct *work)
 		 */
 		if (hci_dev_test_flag(hdev, HCI_USER_CHANNEL) &&
 		    !test_bit(HCI_INIT, &hdev->flags)) {
-			kfree_skb(skb);
+			/* If the device has been opened in HCI_USER_CHANNEL,
+			 * we still want to process event packets for connection
+			 * management. We need to keep track of how many
+			 * connections are up and notify the driver.
+			 */
+			if (hci_skb_pkt_type(skb) == HCI_EVENT_PKT)
+				hci_handle_userchannel_packet(hdev, skb);
+			else
+				kfree_skb(skb);
 			continue;
 		}
 

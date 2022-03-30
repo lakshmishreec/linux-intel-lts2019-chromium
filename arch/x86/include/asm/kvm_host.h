@@ -902,10 +902,7 @@ struct kvm_arch {
 	bool pause_in_guest;
 	bool cstate_in_guest;
 
-#ifdef CONFIG_KVM_VIRT_SUSPEND_TIMING
 	u64 msr_suspend_time;
-	struct gfn_to_hva_cache suspend_time;
-#endif /* KVM_VIRT_SUSPEND_TIMING */
 
 	unsigned long irq_sources_bitmap;
 	s64 kvmclock_offset;

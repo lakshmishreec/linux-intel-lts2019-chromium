@@ -404,17 +404,19 @@ int drm_dp_dpcd_read_phy_link_status(struct drm_dp_aux *aux,
 				     u8 link_status[DP_LINK_STATUS_SIZE])
 {
 	int ret;
+	u8 full_link_stat[DP_LINK_STATUS_SIZE + 2];
 
 	if (dp_phy == DP_PHY_DPRX) {
 		ret = drm_dp_dpcd_read(aux,
-				       DP_LANE0_1_STATUS,
-				       link_status,
-				       DP_LINK_STATUS_SIZE);
+				       DP_SINK_COUNT,
+				       full_link_stat,
+				       sizeof(full_link_stat));
 
 		if (ret < 0)
 			return ret;
 
-		WARN_ON(ret != DP_LINK_STATUS_SIZE);
+		memcpy(link_status, full_link_stat + 2, DP_LINK_STATUS_SIZE);
+		WARN_ON(ret != DP_LINK_STATUS_SIZE + 2);
 
 		return 0;
 	}
@@ -1733,6 +1735,8 @@ EXPORT_SYMBOL(drm_dp_aux_init);
 int drm_dp_aux_register(struct drm_dp_aux *aux)
 {
 	int ret;
+
+	WARN_ON_ONCE(!aux->drm_dev);
 
 	if (!aux->ddc.algo)
 		drm_dp_aux_init(aux);

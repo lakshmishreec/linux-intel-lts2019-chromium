@@ -53,7 +53,7 @@ enum iwl_legacy_cmds {
 	 * @UCODE_ALIVE_NTFY:
 	 * Alive data from the firmware, as described in
 	 * &struct iwl_alive_ntf_v3 or &struct iwl_alive_ntf_v4 or
-	 * &struct iwl_alive_ntf_v5.
+	 * &struct iwl_alive_ntf_v5 or &struct iwl_alive_ntf_v6.
 	 */
 	UCODE_ALIVE_NTFY = 0x1,
 
@@ -74,7 +74,8 @@ enum iwl_legacy_cmds {
 
 	/**
 	 * @PHY_CONTEXT_CMD:
-	 * Add/modify/remove a PHY context, using &struct iwl_phy_context_cmd.
+	 * Add/modify/remove a PHY context, using &struct iwl_phy_context_cmd
+	 *	or &struct iwl_phy_context_cmd_v1.
 	 */
 	PHY_CONTEXT_CMD = 0x8,
 
@@ -92,7 +93,8 @@ enum iwl_legacy_cmds {
 
 	/**
 	 * @SCAN_CFG_CMD:
-	 * uses &struct iwl_scan_config_v1 or &struct iwl_scan_config
+	 * uses &struct iwl_scan_config_v1, &struct iwl_scan_config_v2
+	 * or &struct iwl_scan_config
 	 */
 	SCAN_CFG_CMD = 0xc,
 
@@ -346,14 +348,6 @@ enum iwl_legacy_cmds {
 	REPLY_THERMAL_MNG_BACKOFF = 0x7e,
 
 	/**
-	 * @DC2DC_CONFIG_CMD:
-	 * Set/Get DC2DC frequency tune
-	 * Command is &struct iwl_dc2dc_config_cmd,
-	 * response is &struct iwl_dc2dc_config_resp
-	 */
-	DC2DC_CONFIG_CMD = 0x83,
-
-	/**
 	 * @NVM_ACCESS_CMD: using &struct iwl_nvm_access_cmd
 	 */
 	NVM_ACCESS_CMD = 0x88,
@@ -381,7 +375,7 @@ enum iwl_legacy_cmds {
 	 * &struct iwl_notif_statistics_v11,
 	 * &struct iwl_notif_statistics_v10,
 	 * &struct iwl_notif_statistics,
-	 * &struct iwl_statistics_operational_ntfy
+	 * &struct iwl_statistics_operational_ntfy_ver_14
 	 */
 	STATISTICS_CMD = 0x9c,
 
@@ -390,6 +384,7 @@ enum iwl_legacy_cmds {
 	 * one of &struct iwl_notif_statistics_v10,
 	 * &struct iwl_notif_statistics_v11,
 	 * &struct iwl_notif_statistic,
+	 * &struct iwl_statistics_operational_ntfy_ver_14
 	 * &struct iwl_statistics_operational_ntfy
 	 */
 	STATISTICS_NOTIFICATION = 0x9d,
@@ -406,13 +401,6 @@ enum iwl_legacy_cmds {
 	 * &struct iwl_dev_tx_power_cmd
 	 */
 	REDUCE_TX_POWER_CMD = 0x9f,
-
-	/**
-	 * @CARD_STATE_NOTIFICATION:
-	 * Card state (RF/CT kill) notification,
-	 * uses &struct iwl_card_state_notif
-	 */
-	CARD_STATE_NOTIFICATION = 0xa1,
 
 	/**
 	 * @MISSED_BEACONS_NOTIFICATION: &struct iwl_missed_beacons_notif
@@ -642,6 +630,16 @@ enum iwl_system_subcmd_ids {
 	 * @RFI_GET_FREQ_TABLE_CMD: &struct iwl_rfi_config_cmd
 	 */
 	RFI_GET_FREQ_TABLE_CMD = 0xc,
+
+	/**
+	 * @SYSTEM_FEATURES_CONTROL_CMD: &struct iwl_system_features_control_cmd
+	 */
+	SYSTEM_FEATURES_CONTROL_CMD = 0xd,
+
+	/**
+	 * @RFI_DEACTIVATE_NOTIF: &struct iwl_rfi_deactivate_notif
+	 */
+	RFI_DEACTIVATE_NOTIF = 0xff,
 };
 
 /**
@@ -649,7 +647,7 @@ enum iwl_system_subcmd_ids {
  */
 enum iwl_xvt_subcmd_ids {
 	/**
-	 * Get/Set PHY DB Command
+	 * @GRP_XVT_GET_SET_PHY_DB_CMD: Get/Set PHY DB Command
 	 * Handled by user space component
 	 */
 	GRP_XVT_GET_SET_PHY_DB_CMD = 0x34,
